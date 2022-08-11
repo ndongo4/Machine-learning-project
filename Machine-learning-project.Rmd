@@ -2,10 +2,38 @@
 title: "Projet apprentissage statistique"
 author: "Ndongo Seye;"
 date: "`r Sys.Date()`"
-output: pdf_document
+bibliohraphy: references.bib
+csl: french1.csl
+output: 
+  pdf_document: 
+    fig_width: 5
+    fig_height: 3
+    fig_caption: yes
+    number_sections: yes
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r packages, include=FALSE}
+library(tidyverse)
+```
+
+
+# Cahrgement et préparation de données réelles
+
+```{r data, include=FALSE}
+url="https://www.kaggle.com/raghadalharbi/breast-cancer-gene-expression-profiles-metabric"
+
+muatation <- read_delim(file = url,
+                      delim  =  ";",
+                      skip = 1
+                      )
+problems()
+
+```
+
+
+
+# Prédiction 
