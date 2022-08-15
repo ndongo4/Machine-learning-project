@@ -2,7 +2,9 @@
 title: "Projet apprentissage statistique"
 author: "Ndongo Seye;"
 date: "`r Sys.Date()`"
-bibliohraphy: references.bib
+bibliography: references.bib
+link-citations: yes
+link-bibliography: yes
 csl: french1.csl
 output: 
   pdf_document: 
@@ -10,30 +12,406 @@ output:
     fig_height: 3
     fig_caption: yes
     number_sections: yes
+linkcolor: red
+toccolor: Maroon
+citecolor: blue
+fontsize: 12pt
+geometry: margin=1.0in
+hyperrefoptions:
+ - linktoc=all
+ - pdfwindowui
+ 
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
 ```
 
-```{r packages, include=FALSE}
+```{r packages, include=FALSE, echo=FALSE}
 library(tidyverse)
+library(ggtext)
+#library(lubridate)
+#library(glue)
+#library(ggpubr)
+#library(rstatix)
+library(caret)
+library(randomForest)
+library(e1071)
+library(glmnet)
 ```
 
 
-# Cahrgement et préparation de données réelles
+# Chargement et préparation de données réelles  
 
-```{r data, include=FALSE}
-url="https://www.kaggle.com/raghadalharbi/breast-cancer-gene-expression-profiles-metabric"
+Nous nommerons le jeu de données de cancer du sein METABRIC téléchargé depuis [kaggle](https://www.kaggle.com/raghadalharbi/breast-cancer-gene-expression-profiles-metabric) par *datacancer* dans ce projet. 
 
-muatation <- read_delim(file = url,
-                      delim  =  ";",
-                      skip = 1
-                      )
-problems()
+ 
+## Chargement, description et préparation du jeu de données: 
+
+
+
+```{r data, echo=FALSE, include=FALSE}
+
+datacancer <- read.csv("data/METABRIC_RNA_Mutation.csv") 
+head(datacancer, 10)
+  
+```
+Le jeu de données compte 1904 obervations et 693 variables.
+
+On voit que les patientes décédées du cancer ou non  sont codés dans une variable catégorielle   _death_from_cancer_ à 3 niveaux: 
+
+ - _Living_: si la patiente est en vie,
+ - _Died of Disease_: si la patiente est morte du cancer du sein,
+ - _Died of Other Causes_: si la patiente est morte d'une cause différente du cancer du sein 
+
+Pour chaque patiente, on attribue un identifiant unique _patient_id_.  On donne l'âge  de la patiente au moment où elle a été diagnostiquée porteuse du cancer ( _age_at_dignosis_ ), si ellle suit une chimiothérapie ou pas ( _chemotherapy_ ), le diagnostic du nombre de mutation du cancer ( _mutation_count_ ), la taille de la tumeur ( _tumor_size_ ) et son état de développement ( _tumor_stage_ ).
+
+
+Nous allons coder la variable _death from cancer_ en bianaire où le niveau _Died of Disease_=1 et 0 pour les autres en:
+ 
+ a. créant  une variable Y binaire qui vaut 1 pour les patientes décédées du cancer et 0 pour les autres,
+ b. ne gardant que les variables   _age_at_dignosis_, _tumor_size_, _mutation_count_, _death_from_cancer_  et celles allant de la colonne 32 à 693,
+ 
+ 
+```{r recodage1, include=TRUE, eval=FALSE}
+ datacancer <- datacancer %>% 
+   select( age_at_diagnosis, tumor_size, mutation_count, Y=death_from_cancer, all_of(32:693)) %>%  # ici Y=death_from_cancer pour renommer la variable death_from_cancer par Y
+   mutate( Y= if_else(Y=="Died of Disease",1,0) ) # pour le recodage en binaire
+```
+
+Le jeu de données compte maintenant 1904 observations et 666 colonnes. 
+ 
+  c. modifiant les données de mutations en variables binaires: 1 pour chaque mutation, quelque soit le code qui la décrive.
+   
+   Les données de mutations se terminent par _\_mut_. Elles vont de la colonne 494 à la fin du tableau. 
+   
+```{r recodage2, include=TRUE,eval=FALSE}
+datacancer[494:666] <- if_else(datacancer[494:666]==0,0,1) # si pas mutation: 0 sinon 1 
+
+datacancer %>% 
+  filter(is.na(mutation_count) | is.na(tumor_size))# 65 données manquantes pour l'ensemble mutation_count et tumor_size
+ 
+datacancer <- datacancer %>% 
+  drop_na(tumor_size,mutation_count)
+any(is.na(datacancer)) # pour vérifier qu'il ne reste rien de données manquantes
 
 ```
 
 
+  
+   
+Le jeu de données _datacancer_ est en fin préparée pour les parties 2 et 3. J'ai préféré supprimer les données manquantes puisqu'il n'y a qu'en tout 65 au total.
 
 # Prédiction 
+
+## Choisir trois méthodes de prédiction vues en cours 
+
+- Méthodes de prédiction avec forêt aléatoire:
+
+  Tout d'abord un arbre de décision est un organigramme   qui permet de classifier des données d'entrées ou de prédire la valeur de sortie de ces   données.   Il est facile à interprété et à visualiser et est péfèré des méthodes à noyau [@Chollet2022]. En particulier, les forêts aléatoires sont robustes et pratiques en apprentissage et impliquent plusieurs arbres de décision et assemblent leurs sorties [@Chollet2022]. Ils permettent aussi de diminuer le risque de sur-apprentissage.
+
+- Méthode de prédiction SVM:
+
+  Elle est simple à utiliser car nécessitant peu de paramètres. SVM est un algorithme de classification qui fonctionne en trouvant des «frontières de décision» séparant deux classes. 
+  
+- Méthode de prédiction avec pénalité: 
+
+  La régression pénalisée permet de gérer les corrélations entre covariables ou encore la sélection des variables. Deux types de pénalités: Lasso pour la sélection de variable et Ridge pour la corrélation entre variables. La pénalité  Elastic-net  est un bon compromis entre les deux autres types de pénalités.
+
+
+ a. aucune réduction de dimension
+
+   1. Méthodes de prédiction avec forêt aléatoire 
+     
+      - Séparation du jeu d'apprentissage et mise en facteur la variable Y 
+
+```{r train1, }
+# On met la variable Y en facteur labellisée en (0="no" for Others cases) et ( 1="yes" for Death from Cancer)
+datacancer <- datacancer %>% 
+  mutate(Y=as.factor(if_else(Y==0,"no","yes") , levels = ) )
+
+#  Séparation du jeu de données en jeu de test et d'apprentissage
+inTrain <- createDataPartition(
+  y <- datacancer$Y,
+  p=.75,
+  list = FALSE
+)
+
+# jeu d'apprentissage
+cancerTraining <- datacancer %>% 
+  slice(n=inTrain)
+# jeu de test
+cancerTest <- datacancer %>% 
+  slice(n=-inTrain)
+
+# crtl est un paramètre de contrôle avec validation croisée qu'on utilisera dans train
+ctrl <- trainControl(
+  #method = "boot",
+  method="repeatedcv",
+  number=10,
+  repeats = 3,
+  classProbs = TRUE, 
+  summaryFunction = twoClassSummary
+)
+
+# Ajustement  
+rfFit <- train(
+  Y ~.,
+  data = cancerTraining,
+  method = "rf",
+  tuneLength = 13,
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+
+```
+  
+  
+```{r ROC, fig.cap=" Courbe ROC avec validation croisée", fig.align='center', echo=TRUE, eval=TRUE}
+knitr::include_graphics("pictures/ROC_cross_validation.png", auto_pdf = T)
+
+```
+  
+     
+Le modèle ayant la meilleure prédiction par validation croisée est alors le modèle final en sortie. On regardera ensuite les performances de l'arbre apris sur le jeu test
+
+```{r finalModel, eval=F}
+decision <- rfFit$finalModel
+
+#  Prédiction du modèle
+prediction <- predict(rfFit,cancerTest)
+# la matrice de confusion
+confMat <- confusionMatrix(prediction,cancerTest$Y)
+print(confMat)
+
+```
+
+l'Accuracy indique la proportion de bien classé (le pourcentage de nombres d'individus bien classés sur le jeu text). Il indique 70\%.
+la sensitivité qui indique la proportion de vraies décédées du cancer est de 93,5\%. On a 17\% qui sont survécues ou qont mortes d'une autre façon différente non causée par le cancer du sein. 
+
+  
+  2. Méthode de prédiction SVM 
+      
+     - Sur le jeu d'apprentissage créé précédemment, on apllique les deux méthodes de SVM: linéaire et à noyaux.
+      
+```{r svm0}
+linearsvm <-  svm(formula = Y~., 
+                  data = cancerTraining,
+                  type = 'C-classification', 
+                  kernel = 'linear'
+                  )
+
+
+gaussiansvm <- svm(formula = Y~., 
+                   data = cancerTraining,
+                   type = 'C-classification', 
+                   kernel = 'radial'
+                   )
+
+```
+   
+   - Prédiction sur le jeu test
+   
+```{r svm1}
+linearpred   <- predict(linearsvm, newdata = cancerTest)
+gaussianpred <- predict(gaussiansvm, newdata = cancerTest)
+
+confMatSVM_lin <- confusionMatrix(data=linearpred,cancerTest$Y)
+confMatSVM_gau <- confusionMatrix(data=gaussianpred,cancerTest$Y)
+save(confMatSVM_lin,file="data/confMatSVM_lin.RData")
+save(confMatSVM_gau,file="data/confMatSVM_gau.RData")
+```
+      
+```{r confmat, eval=TRUE}
+load(file="data/confMatSVM_lin.RData")
+load(file="data/confMatSVM_gau.RData")
+print(confMatSVM_lin)
+print(confMatSVM_gau)
+
+```
+
+
+     
+   3. Méthode de prédiction avec pénalité
+    
+     Nous disposons de trois méthodes pour la régression pénalisée: Lasso, Ridge et  Elastic-net. Soient le jeu d'apprentissage _cancerTraining_ et le jeu test _cancerTest_ crées précédemment.
+    
+```{r train_penality_learning}
+#jeu d'apprentissage 
+y.train <- cancerTraining %>% 
+  select(Y) %>%
+  as.matrix()
+
+x.train <- cancerTraining %>% 
+  select(-Y) %>% 
+  as.matrix()
+
+```
+ 
+   - Pénalité Ridge
+     
+```{r ridge, eval=F}
+model.ridge <- glmnet(x.train,y.train,family = "binomial",alpha=0)
+plot(model.ridge)
+```
+
+
+
+```{r fig_ridge, fig.align='center', fig.cap=" Modèle ridge", eval=TRUE}
+knitr::include_graphics("pictures/ridge.png")
+
+```
+
+
+\newpage      
+  - Lasso 
+   
+```{r lasso, fig.align='center',fig.cap=""}
+model.lasso <- glmnet(x.train,y.train,family = "binomial",alpha=1)
+```
+
+```{r fig_lasso, fig.align='center', fig.cap=" Modèle Lasso",eval=TRUE}
+knitr::include_graphics("pictures/lasso.png")
+
+```
+
+ 
+ 
+ 
+ 
+ 
+  
+  - Elastic net
+   
+```{r elastic_net}
+model.elastic_net <- glmnet(x.train,y.train,family = "binomial",alpha=.5)
+
+```
+
+```{r fig_EN, fig.align='center', fig.cap=" Modèle Elastic net", eval=TRUE}
+knitr::include_graphics("pictures/elastic_net.png")
+
+```
+
+Nous choisirons la méthode _elastic net_ en  procédant par validation croisée. Car c'est un bon compromis entre les deux.
+ 
+ 
+```{r elastic_net1}
+cancer.cv <- cv.glmnet(x.train,y.train,nfolds=20,family="binomial")
+cancer.cv$lambda.min
+model.EN.cv <- glmnet(x.train,y.train,family="binomial",alpha=0.5,nlambda=1,lambda=cancer.cv$lambda.min)
+```
+ 
+ 
+   - Prédiction du modèle sur le jeu test
+  
+```{r}
+cancerpredict.EN.cv <- predict(model.EN.cv,x.train,type="response",family="binomial")
+results <- tibble(proba=cancerpredict.EN.cv,y.pred=round(cancerpredict.EN.cv),y.truth=(y.train=="yes")*1)
+results
+cfMat.EN <- confusionMatrix(data = as_factor(results$y.pred),as_factor(results$y.truth))
+save(cfMat.EN,file = "pictures/cfMat_acp.RData")
+```
+
+  La matrice de confusion donne un bon taux de classement (76\%) sur le jeu test avec une bonne sensitivité  de 94\% et une spécificité assez faible de 40%.
+```{r cfMat_svm}
+load(file = "pictures/cfMat_acp.RData")
+cfMat.EN
+```
+  
+  
+  
+ b. par ACP 
+   
+   - Réduction de dimension par ACP
+    
+    
+```{r acp}
+acp <- datacancer %>% 
+  select(-Y) %>% as.matrix() %>% 
+  prcomp()
+
+# selection des variables avec 70% 
+nvar <- which(cumsum(acp[["sdev"]])/sum(acp[["sdev"]])>.7)
+
+cancerTraining_ACP <- as_tibble(acp$x[,1:nvar]) %>% 
+                   mutate(Y=datacancer$Y,
+                   .before="PC1"
+                     ) %>% 
+                   slice(n=inTrain)
+
+cancerTest_ACP <- as_tibble(acp$x[,1:nvar]) %>% 
+                   mutate(Y=datacancer$Y,
+                   .before="PC1"
+                     ) %>% 
+                   slice(n=-inTrain)
+
+  
+```
+
+
+
+  
+   1. Méthodes de prédiction avec forêt aléatoire 
+   
+```{r train_acp}
+rfFit_ACP <- train(
+  Y ~ .,
+  data = cancerTraining_ACP,
+  method = "rf",
+  tuneLength = 13, #donne le nombre de valeurs à essayer pour chaque paramètre à faire varier (ici nombre de variables à prendre en compte)
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+```
+
+```{r roc_acp, fig.align='center', fig.cap="Courbe ROC par validation croisée/Avec réduction de dimension",eval=TRUE}
+knitr::include_graphics("pictures/ROC_cross_validation_acp.png", auto_pdf = TRUE)
+```
+  
+  
+```{r prediction_acp, include=FALSE}
+prediction_acp <- predict(rfFit_ACP,cancerTest_ACP)
+
+confMat_ACP <- confusionMatrix(prediction_acp,cancerTest_ACP$Y) 
+save(confMat_ACP, file = "data/confMat_ACP.RData")
+```
+
+```{r pred_acp, eval=TRUE}
+load("data/confMat_ACP.RData")
+confMat_ACP
+```
+
+
+
+
+  
+   2. Méthode de prédiction SVM 
+  
+  3. Méthode de prédiction avec pénalité
+
+c. par auto-encodeur
+
+  1. Méthodes de prédiction avec forêt aléatoire 
+  
+  2. Méthode de prédiction SVM 
+  
+  3. Méthode de prédiction avec pénalité
+
+
+
+# Sélection 
+
+
+
+
+
+
+
+
+# Références
+
+
+
