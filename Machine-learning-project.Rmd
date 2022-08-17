@@ -38,6 +38,9 @@ library(caret)
 library(randomForest)
 library(e1071)
 library(glmnet)
+library(keras)
+library(tensorflow)
+require(reticulate)
 ```
 
 
@@ -50,7 +53,7 @@ Nous nommerons le jeu de données de cancer du sein METABRIC téléchargé depui
 
 
 
-```{r data, echo=FALSE, include=FALSE}
+```{r data, include=FALSE}
 
 datacancer <- read.csv("data/METABRIC_RNA_Mutation.csv") 
 head(datacancer, 10)
@@ -73,7 +76,7 @@ Nous allons coder la variable _death from cancer_ en bianaire où le niveau _Die
  b. ne gardant que les variables   _age_at_dignosis_, _tumor_size_, _mutation_count_, _death_from_cancer_  et celles allant de la colonne 32 à 693,
  
  
-```{r recodage1, include=TRUE, eval=FALSE}
+```{r recodage1}
  datacancer <- datacancer %>% 
    select( age_at_diagnosis, tumor_size, mutation_count, Y=death_from_cancer, all_of(32:693)) %>%  # ici Y=death_from_cancer pour renommer la variable death_from_cancer par Y
    mutate( Y= if_else(Y=="Died of Disease",1,0) ) # pour le recodage en binaire
@@ -128,7 +131,7 @@ Le jeu de données _datacancer_ est en fin préparée pour les parties 2 et 3. J
 ```{r train1, }
 # On met la variable Y en facteur labellisée en (0="no" for Others cases) et ( 1="yes" for Death from Cancer)
 datacancer <- datacancer %>% 
-  mutate(Y=as.factor(if_else(Y==0,"no","yes") , levels = ) )
+  mutate(Y=as.factor(if_else(Y==0,"no","yes") ) )
 
 #  Séparation du jeu de données en jeu de test et d'apprentissage
 inTrain <- createDataPartition(
@@ -176,19 +179,23 @@ knitr::include_graphics("pictures/ROC_cross_validation.png", auto_pdf = T)
      
 Le modèle ayant la meilleure prédiction par validation croisée est alors le modèle final en sortie. On regardera ensuite les performances de l'arbre apris sur le jeu test
 
-```{r finalModel, eval=F}
+```{r finalModel}
 decision <- rfFit$finalModel
 
 #  Prédiction du modèle
-prediction <- predict(rfFit,cancerTest)
+prediction <- predict(decision,cancerTest)
 # la matrice de confusion
 confMat <- confusionMatrix(prediction,cancerTest$Y)
-print(confMat)
+save(confMat, file = "data/confMat.RData")
 
+```
+```{r}
+load("data/confMat.RData")
+confMat
 ```
 
 l'Accuracy indique la proportion de bien classé (le pourcentage de nombres d'individus bien classés sur le jeu text). Il indique 70\%.
-la sensitivité qui indique la proportion de vraies décédées du cancer est de 93,5\%. On a 17\% qui sont survécues ou qont mortes d'une autre façon différente non causée par le cancer du sein. 
+la sensitivité qui indique la proportion de vraies décédées du cancer est de 96\%. On a 7\% qui sont survécues ou qont mortes d'une autre façon différente non causée par le cancer du sein. 
 
   
   2. Méthode de prédiction SVM 
@@ -247,6 +254,10 @@ x.train <- cancerTraining %>%
   select(-Y) %>% 
   as.matrix()
 
+x.train_test <- cancerTest %>% 
+  select(-Y) %>% 
+  as.matrix()
+
 ```
  
    - Pénalité Ridge
@@ -301,6 +312,7 @@ Nous choisirons la méthode _elastic net_ en  procédant par validation croisée
 cancer.cv <- cv.glmnet(x.train,y.train,nfolds=20,family="binomial")
 cancer.cv$lambda.min
 model.EN.cv <- glmnet(x.train,y.train,family="binomial",alpha=0.5,nlambda=1,lambda=cancer.cv$lambda.min)
+
 ```
  
  
@@ -314,11 +326,12 @@ cfMat.EN <- confusionMatrix(data = as_factor(results$y.pred),as_factor(results$y
 save(cfMat.EN,file = "pictures/cfMat_acp.RData")
 ```
 
-  La matrice de confusion donne un bon taux de classement (76\%) sur le jeu test avec une bonne sensitivité  de 94\% et une spécificité assez faible de 40%.
+
 ```{r cfMat_svm}
 load(file = "pictures/cfMat_acp.RData")
 cfMat.EN
 ```
+La matrice de confusion donne un bon taux de classement (78\%) sur le jeu test avec une bonne sensitivité  de 93\% et une spécificité assez faible de 47%.
   
   
   
@@ -364,7 +377,7 @@ rfFit_ACP <- train(
   trControl = ctrl,
   metric = "ROC"
 )
-
+plot(rfit)
 ```
 
 ```{r roc_acp, fig.align='center', fig.cap="Courbe ROC par validation croisée/Avec réduction de dimension",eval=TRUE}
@@ -384,21 +397,193 @@ load("data/confMat_ACP.RData")
 confMat_ACP
 ```
 
+66% des individus sont bien classés selon cette méthode avec un bon taux du nombre de patientes décédées (97%). Cependant la spécifité est très faible (4%)
 
 
 
-  
-   2. Méthode de prédiction SVM 
-  
-  3. Méthode de prédiction avec pénalité
-
-c. par auto-encodeur
-
-  1. Méthodes de prédiction avec forêt aléatoire 
   
   2. Méthode de prédiction SVM 
   
+   - On réutilise les jeux d'apprentissage et de test précédemment dans cette dsection ( _cancderTraining_ACP_ et _canccerTest_ACP_ ).
+    
+```{r}
+linearsvm_acp <-  svm(formula = Y~., 
+                  data = cancerTraining_ACP,
+                  type = 'C-classification', 
+                  kernel = 'linear')
+
+gaussiansvm_acp <- svm(formula = Y~., 
+                   data = cancerTraining_ACP,
+                   type = 'C-classification', 
+                   kernel = 'radial')
+```
+ 
+   
+   - Prédiction sur le jeu  test et matrice de confusion
+   
+```{r}
+linearpred_acp      <- predict(linearsvm_acp, newdata = cancerTest_ACP)
+gaussianpred_acp    <- predict(gaussiansvm_acp, newdata = cancerTest_ACP)
+confMat_svm_acp_lin <- confusionMatrix(data=linearpred_acp,cancerTest_ACP$Y)
+confMat_svm_acp_gau <- confusionMatrix(data=gaussianpred_acp,cancerTest_ACP$Y)
+
+save(confMat_svm_acp_lin, file = "data/confMat_svm_acp_lin.RData")
+save(confMat_svm_acp_gau,file = "data/confMat_svm_acp_gau.RData")
+```
+   
+
+
+```{r svm_acp, eval=TRUE}
+load("data/confMat_svm_acp_lin.RData")
+load("data/confMat_svm_acp_gau.RData")
+
+confMat_svm_acp_lin
+confMat_svm_acp_gau
+
+```
+
+     
   3. Méthode de prédiction avec pénalité
+  
+```{r train_penality_learning_acp}
+#jeu d'apprentissage 
+y.train_acp <- cancerTraining_ACP %>% 
+  select(Y) %>%
+  as.matrix()
+
+x.train_acp <- cancerTraining_ACP %>% 
+  select(-Y) %>% 
+  as.matrix()
+
+```
+
+  - Pénalité Ridge
+
+```{r}
+model.ridge_acp <- glmnet(x.train_acp,y.train_acp,family = "binomial" ,alpha=0)
+plot(model.ridge_acp)
+```
+
+```{r ridge_acp, fig.cap="Méthde de Ridge",fig.align='center',eval=TRUE, out.width="40%"}
+knitr::include_graphics("pictures/ridge_acp.png", auto_pdf = TRUE)
+```
+
+  - Pénalité Lasso
+  
+```{r}
+model.lasso_acp <- glmnet(x.train_acp,y.train_acp,family = "binomial" , alpha=1)
+plot(model.lasso_acp)
+```
+
+```{r lasso_acp, fig.cap="Pénalité Lasso",fig.align='center', eval=TRUE,out.width="40%"}
+knitr::include_graphics("pictures/lasso_acp.png", auto_pdf = TRUE)
+
+```
+
+
+  - Pénalité Elastic net
+ 
+ 
+```{r}
+model.elastic_net_acp <- glmnet(x.train_acp,y.train_acp,family = "binomial" , alpha=.5)
+plot(model.elastic_net_acp)
+```
+
+```{r elastic_net_acp, fig.cap="Elastic net",fig.align='center', eval=TRUE,out.width="40%"}
+knitr::include_graphics("pictures/elastic_net_acp.png", auto_pdf = TRUE)
+
+```
+
+  - Prédition avec elastic net
+
+
+```{r}
+cancer.cv_acp <- cv.glmnet(x.train_acp,y.train_acp,nfolds=10,family="binomial" )
+cancer.cv_acp$lambda.min
+model.EN.cv_acp <- glmnet(x.train_acp,y.train_acp,family="binomial" ,alpha=0.5,nlambda=100,lambda=cancer.cv_acp$lambda.min)
+
+cancerpredict.EN.cv_acp <- predict(model.EN.cv_acp,x.train_acp,type="response", family="binomial" )
+results_acp <- tibble(proba=cancerpredict.EN.cv_acp,pred=round(cancerpredict.EN.cv_acp),y.truth=(y.train_acp=="yes") *1 )
+results_acp
+confMat_EN_acp <- confusionMatrix(data=as_factor(results_acp$pred),as_factor(results_acp$y.truth))
+save(confMat_EN_acp,file = "data/confMat_EN_acp.RData")
+
+```
+
+- Matrice de confusion
+
+```{r}
+load(file = "data/confMat_EN_acp.RData")
+confMat_EN_acp
+
+```
+
+On a 74% d'individus bien classés mais avec un mauvais taux de vrai négatif (seulement 31,4% des individus non décédées du cancer sont détectés). Par contre on a une sensitivité de 95%.
+
+\newpage
+c. par auto-encodeur 
+
+Nous utiliserons le package _keras_ et/ou _tensorflow_ pour cette partie auto-encodeur et considérons le jeu d'apprentissage _cancerTraining_
+
+```{r}
+#mise en forme (cf vignette keras)
+
+
+y <-  cancerTraining %>% 
+  mutate(Y=as.integer(if_else(Y=="no",0,1))) %>% 
+  select(Y) %>% 
+  as.matrix()
+#y <- to_categorical(y.train)
+
+x <- cancerTraining %>% 
+  select(-Y) %>% 
+  as.matrix()
+
+x <- array_reshape(x,dim(x))
+
+x.test <- cancerTest %>% 
+  select(-Y) %>% 
+  as.matrix()
+x.test <- array_reshape(x.test,dim(x.test))
+
+y.test <-  cancerTest %>% 
+  mutate(Y=as.integer(if_else(Y=="no",0,1))) %>% 
+  select(Y) %>% 
+  as.matrix()
+
+
+
+model <- keras_model_sequential()
+model %>%
+layer_dense(units = 20, activation = "softmax", input_shape = c(2)) 
+#layer_dropout(rate = 0.4) %>%
+#layer_dense(units = 20, activation = 'relu')
+#layer_dropout(rate = 0.3) %>%
+#layer_dense(units = 1, activation = 'sigmoid')
+#layer_dense(units = 2, activation = 'softmax')
+
+# compile
+model %>% compile(
+#loss = 'binary_crossentropy',
+loss = 'categorical_crossentropy',
+optimizer = 'adam',
+metrics = c('accuracy')
+)
+
+# Validation
+history <- model %>% fit(
+x, y, 
+epoch=7,
+batch_size = 16,
+validation_data=list(x.test,y.test)
+#validation_split = 0.2,
+#verbose=FALSE
+)
+
+
+```
+
+
 
 
 
