@@ -249,12 +249,15 @@ print(confMatSVM_gau)
 y.train <- cancerTraining %>% 
   select(Y) %>%
   as.matrix()
+y.test <- cancerTest %>% 
+  select(Y) %>% 
+  as.matrix()
 
 x.train <- cancerTraining %>% 
   select(-Y) %>% 
   as.matrix()
 
-x.train_test <- cancerTest %>% 
+x.test <- cancerTest %>% 
   select(-Y) %>% 
   as.matrix()
 
@@ -331,7 +334,7 @@ save(cfMat.EN,file = "pictures/cfMat_acp.RData")
 load(file = "pictures/cfMat_acp.RData")
 cfMat.EN
 ```
-La matrice de confusion donne un bon taux de classement (78\%) sur le jeu test avec une bonne sensitivité  de 93\% et une spécificité assez faible de 47%.
+La matrice de confusion donne un bon taux de classement (78\%) sur le jeu test avec une bonne sensitivité  de 93\% et une spécificité assez faible de 47.4%.
   
   
   
@@ -364,6 +367,7 @@ cancerTest_ACP <- as_tibble(acp$x[,1:nvar]) %>%
 ```
 
 
+On a une diminution de nombre de variable de 244.
 
   
    1. Méthodes de prédiction avec forêt aléatoire 
@@ -525,20 +529,26 @@ c. par auto-encodeur
 
 Nous utiliserons le package _keras_ et/ou _tensorflow_ pour cette partie auto-encodeur et considérons le jeu d'apprentissage _cancerTraining_
 
-```{r}
-#mise en forme (cf vignette keras)
 
+  - Préparation des données
+```{r toy_data}
 
 y <-  cancerTraining %>% 
-  mutate(Y=as.integer(if_else(Y=="no",0,1))) %>% 
+  mutate(Y=if_else(Y=="no",0,1)) %>% 
+  select(Y)  %>% 
+  as.matrix()
+y <- to_categorical(y)
+
+y.test <-  cancerTest %>% 
+  mutate(Y=if_else(Y=="no",0,1)) %>% 
   select(Y) %>% 
   as.matrix()
-#y <- to_categorical(y.train)
+y.test <- to_categorical(y.test)
+
 
 x <- cancerTraining %>% 
   select(-Y) %>% 
   as.matrix()
-
 x <- array_reshape(x,dim(x))
 
 x.test <- cancerTest %>% 
@@ -546,54 +556,171 @@ x.test <- cancerTest %>%
   as.matrix()
 x.test <- array_reshape(x.test,dim(x.test))
 
-y.test <-  cancerTest %>% 
-  mutate(Y=as.integer(if_else(Y=="no",0,1))) %>% 
-  select(Y) %>% 
-  as.matrix()
+
+```
+
+ - Apprentissage
+
+```{r learning_toy_data}
+model <- keras_model_sequential( input_shape = c(665))
+model %>% 
+  layer_dense(units = 64, activation = "relu") %>% 
+  layer_dense(units = 32, activation = "sigmoid") %>% 
+  layer_dense(units = 2, activation = "softmax")  
+
+model
+
+model$weights
 
 
-
-model <- keras_model_sequential()
-model %>%
-layer_dense(units = 20, activation = "softmax", input_shape = c(2)) 
-#layer_dropout(rate = 0.4) %>%
-#layer_dense(units = 20, activation = 'relu')
-#layer_dropout(rate = 0.3) %>%
-#layer_dense(units = 1, activation = 'sigmoid')
-#layer_dense(units = 2, activation = 'softmax')
 
 # compile
 model %>% compile(
 #loss = 'binary_crossentropy',
-loss = 'categorical_crossentropy',
+loss = 'mean_squared_error',
 optimizer = 'adam',
 metrics = c('accuracy')
 )
 
 # Validation
+
+# Nous utilisons l'argument validation_data pour apprendre sur le jeu de données test en faisant sortir
+# les erreurs quadratiques ansi que la proportion d'individus classée
 history <- model %>% fit(
 x, y, 
-epoch=7,
-batch_size = 16,
+epoch=100,
+batch_size = 128,
 validation_data=list(x.test,y.test)
 #validation_split = 0.2,
 #verbose=FALSE
 )
 
+str(history$metrics)
+str(history$params)
+
+history$metrics$val_accuracy[100]
+history$metrics$val_loss[100]
+
+plot(history)
+```
+
+
+
+```{r keras, fig.align='center', fig.cap=" Erreur moyenne quadratique et prédiction", eval=TRUE,echo=FALSE}
+knitr::include_graphics("pictures/keras.png")
+```
+
+Avec keras, on a une précision de 61% sur  100 itération et une erreur quadratique moyenne de 0.302 . 
+
+- Prédicton
+
+```{r}
+y.pred  <- model %>%
+  predict(x.test, type = "response") %>% 
+  apply(1,which.max)-1
+
+y.test_test <- y.test %>% 
+    apply(1,which.max)-1
+
+
+head(predictions, 10)
+
+
+datapred <- data.frame(x1=predictions[,1],x2=predictions[,2],y=y.pred)
+
+# Affichage de la ségmentation du plan
+# predviz <- datapred %>% 
+#   ggplot() +
+#   geom_point(mapping=aes(x=x1, y=x2,color=y)) 
+# predviz
+
+confusionMatrix(as_factor(y.pred), as_factor(y.test_test))
+```
+
+On a une sensitivité de 76% et une spécifité de 32%. 
+
+## Discussion sur leurs avantages et inconvénients
+
+
+- forêt aléatoire
+
+  + Avantages: permet d'éviter le surapprentissage, paramètre facile à déterminer.
+  + Inconvénients: computentionnellement lourd à réaliser quand le nombre d'arbres est grand
+
+- Méthode SVM
+
+  - Avantages: précision sur la prédiction, fonctionne bien sur de petits jeux de données
+  - Inconvénients: ne convient pas aux jeux de données trop volumineux, Difficulté d’interprétations
+
+- Régression pénalisée
+
+  - Avantages: en utilisant elastic-net permet de conserver les avantages de Lasso et de Ridge 
+  - Inconvénients: il y a un nouveau paramètres à définir par cross-validation
+
+
+Comme nous avons un jeu de données volumineux (1839x666), la réduction de dimension a été utile, réduisant le nombre de variables à 244. 
+
+# Sélection  
+
+
+Proposons une manière d'effectuer une selection à l'aide d'une selection par stabilité et mettrons la en oeuvre.
+On lance *B* bootstraps et on apprend sur chacun d'eux un modèle de pénalité Elastic net (\(\alpha=0.5\)) sans aucune réduction de dimension et on garde les ARN/mutaions les plus souvent selectionnés.
+
+
+```{r selection}
+# on réactualise le jeu d'apprentissage x.train en haut partie 'aucune réduction de dimension' 
+B=2000 # nombre de bootstraps
+ncandidats <- dim(x.train)[1]
+selected <- rep(0,dim(x.train)[2]) 
+for (b in 1:B){
+  #echantillon bootstrap
+  bootsample <- sample(1:ncandidats,ncandidats,replace=TRUE)
+  x.boot <- x.train[bootsample,]
+  y.boot <- y.train[bootsample,]
+  #apprentissage
+  model.boot <- glmnet(x.boot,y.boot,family="binomial",alpha=0.5,nlambda=1,lambda=.5*cancer.cv$lambda.min)
+  selectedmutations <- model.boot$beta@i
+  for (i in selectedmutations){
+    selected[i] <- selected[i] +1
+  }
+}
+```
+
+
+```{r }
+#restriction du jeu d'apprentissage aux mutations étant sélectionnés au moins 1/2 du temps
+selection <- which(selected>B/2)
+
+x.train.stab <- data.frame(x.train[,selection]) %>% 
+  select(ends_with('_mut')) # selection des 130 mutations sur les 173 de départ
+  
+cancerTrain.stab <- data.frame(Y=y.train,x.train[,selection]) %>% 
+  as_tibble() %>% 
+  mutate(Y=if_else(Y=="no",0,1))
+
+x.test <- data.frame(x.test) %>% 
+  as_tibble()
+
+
+# apprentissage suivant un modèle linéaire classique
+model <- glm(Y~.,cancerTrain.stab,family = binomial(link = "logit"))
+
+predictions <- predict(model,newdata = x.test,type="response")
+
+confMat_selection <- confusionMatrix(data=as_factor(round(predictions)),as_factor((y.test=="yes")*1))
+save(confMat_selection, file="data/confMat_selection.RData")
 
 ```
 
 
 
+```{r echo=FALSE, eval=TRUE}
+load("data/confMat_selection.RData")
+confMat_selection
+```
 
 
-# Sélection 
-
-
-
-
-
-
+On retrouve 130 variables des mutations et expressions de gènes  sélectionnées la plus part du temps. 
 
 
 # Références
