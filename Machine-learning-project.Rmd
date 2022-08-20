@@ -720,7 +720,7 @@ confMat_selection
 ```
 
 
-On retrouve 130 variables des mutations et expressions de gènes  sélectionnées la plus part du temps. 
+On retrouve 130 variables des mutations et expressions de gènes  sélectionnées la plus part du temps. Le taux de vrais positifs (décédées) est assez bonne (80%) mais le taux de vrais négatifs est très faible (35.5%) 
 
 
 # Références
